@@ -161,6 +161,12 @@ CREATE TABLE IF NOT EXISTS email_otps (
     used       INTEGER     NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Wrong teacher-code guesses (used to lock guessing)
+CREATE TABLE IF NOT EXISTS teacher_code_fails (
+    fail_id    SERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 _ready = False
@@ -225,7 +231,7 @@ def clean_email(raw):
 # ---------------------------------------------------------------------------
 # Stage 2: sign-up
 # ---------------------------------------------------------------------------
-def check_signup(name, email, phone, password, class_id):
+def check_signup(name, email, phone, password, class_id, role="student"):
     """
     Check everything a new student typed. Nothing is saved yet.
     Email AND phone are both required.
@@ -265,6 +271,7 @@ def check_signup(name, email, phone, password, class_id):
         "phone": phone_clean,
         "password_hash": password_hash,
         "class_id": class_id,
+        "role": role,
     }, None
 
 
@@ -280,22 +287,26 @@ def create_student(clean):
         return False, "Choose your class from the list."
     level, section = class_rows[0]["level"], class_rows[0]["section"]
 
-    # Build a unique ID such as S10A-0001 (S + class + section + running number).
+    # Build a unique ID: S10A-0001 for students, T10A-0001 for teachers.
+    role = clean.get("role", "student")
+    prefix = "T" if role == "teacher" else "S"
+    same_kind = "role = 'teacher'" if role == "teacher" else "role <> 'teacher'"
     number = query(
-        "SELECT COUNT(*) AS n FROM users WHERE class_id = ?", (clean["class_id"],)
+        f"SELECT COUNT(*) AS n FROM users WHERE class_id = ? AND {same_kind}",
+        (clean["class_id"],),
     )[0]["n"] + 1
-    student_code = f"S{level}{section}-{number:04d}"
+    student_code = f"{prefix}{level}{section}-{number:04d}"
     while query("SELECT 1 FROM users WHERE student_code = ?", (student_code,)):
         number += 1
-        student_code = f"S{level}{section}-{number:04d}"
+        student_code = f"{prefix}{level}{section}-{number:04d}"
 
     try:
         execute(
             """INSERT INTO users
-               (student_code, name, email, phone, password_hash, class_id)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (student_code, name, email, phone, password_hash, class_id, role)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (student_code, clean["name"], clean["email"], clean["phone"],
-             clean["password_hash"], clean["class_id"]),
+             clean["password_hash"], clean["class_id"], role),
         )
     except psycopg2.IntegrityError:
         return False, "Could not create the account. If you already signed up, try logging in."
@@ -546,7 +557,7 @@ def get_events(user):
     - their own personal entries
     """
     rows = query(
-        """SELECT e.*, c.name AS creator_name, ed.name AS editor_name
+        """SELECT e.*, c.name AS creator_name, c.role AS creator_role, ed.name AS editor_name, ed.role AS editor_role
            FROM timeline_events e
            JOIN users c ON c.user_id = e.created_by
            LEFT JOIN users ed ON ed.user_id = e.edited_by
@@ -698,3 +709,150 @@ def get_leaderboard(class_id, today):
         board.append(stats)
     board.sort(key=lambda s: (s["streak"], s["active_week"], s["xp"]), reverse=True)
     return board
+
+
+# ---------------------------------------------------------------------------
+# Deleting an account
+# ---------------------------------------------------------------------------
+def remove_user(user_id):
+    """
+    Permanently delete one user and everything they made. No password check here.
+    The user row is deleted LAST, so if anything fails halfway the account
+    still exists and the deletion can simply be tried again.
+    """
+    rows = query("SELECT email FROM users WHERE user_id = ?", (user_id,))
+    if not rows:
+        return
+
+    # Entries by other people that this user last edited: just forget the editor.
+    execute("UPDATE timeline_events SET edited_by = NULL WHERE edited_by = ?", (user_id,))
+    # Timeline entries this user added (class and personal).
+    execute("DELETE FROM timeline_events WHERE created_by = ?", (user_id,))
+    # Study blocks (their ticks are removed automatically).
+    execute("DELETE FROM study_blocks WHERE user_id = ?", (user_id,))
+    # Any leftover verification codes for their email.
+    execute("DELETE FROM email_otps WHERE email = ?", (rows[0]["email"],))
+    # Finally the account itself.
+    execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+
+
+def delete_account(user, password):
+    """A student deletes their own account. Returns (True, "") or (False, error)."""
+    rows = query("SELECT password_hash FROM users WHERE user_id = ?", (user["user_id"],))
+    if not rows or not password:
+        return False, "Enter your password to confirm."
+    try:
+        correct = bcrypt.checkpw(
+            password.encode("utf-8"), rows[0]["password_hash"].encode("utf-8")
+        )
+    except ValueError:
+        correct = False
+    if not correct:
+        return False, "That password is wrong."
+
+    remove_user(user["user_id"])
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Editing your own details
+# ---------------------------------------------------------------------------
+def update_profile(user, name, phone, class_id):
+    """
+    Change a student's name, phone and class.
+    Returns (True, updated_user_dict) or (False, error_message).
+    """
+    name = (name or "").strip()
+    if len(name) < 2:
+        return False, "Enter your full name."
+    if not (phone or "").strip():
+        return False, "Phone number is required."
+    phone_clean = clean_phone(phone)
+    if phone_clean is None:
+        return False, "Enter a valid 10-digit mobile number."
+    taken = query(
+        "SELECT 1 FROM users WHERE phone = ? AND user_id <> ?",
+        (phone_clean, user["user_id"]),
+    )
+    if taken:
+        return False, "This phone number is already registered to another account."
+
+    # Only students can change class. Teachers and monitors keep theirs.
+    if user["role"] != "student":
+        class_id = user["class_id"]
+    class_rows = query("SELECT name FROM classes WHERE class_id = ?", (class_id,))
+    if not class_rows:
+        return False, "Choose your class from the list."
+
+    if class_id != user["class_id"]:
+        # Class entries they added belong to the old class, so remove them.
+        # Personal entries are private to them, so those move along with them.
+        execute(
+            "DELETE FROM timeline_events WHERE created_by = ? AND is_personal = 0",
+            (user["user_id"],),
+        )
+        execute(
+            "UPDATE timeline_events SET class_id = ? WHERE created_by = ? AND is_personal = 1",
+            (class_id, user["user_id"]),
+        )
+
+    try:
+        execute(
+            "UPDATE users SET name = ?, phone = ?, class_id = ? WHERE user_id = ?",
+            (name, phone_clean, class_id, user["user_id"]),
+        )
+    except psycopg2.IntegrityError:
+        return False, "This phone number is already registered to another account."
+
+    updated = dict(user)
+    updated.update(
+        name=name, phone=phone_clean, class_id=class_id, class_name=class_rows[0]["name"]
+    )
+    return True, updated
+
+
+# ---------------------------------------------------------------------------
+# Teacher sign-up (protected by a secret teacher access code)
+# ---------------------------------------------------------------------------
+def _teacher_code():
+    """The secret teacher code: from TEACHER_CODE, or secrets.toml [teacher] signup_code."""
+    code = os.environ.get("TEACHER_CODE")
+    if not code:
+        try:
+            code = st.secrets["teacher"]["signup_code"]
+        except Exception:
+            code = None
+    return code
+
+
+def teacher_signup_enabled():
+    return bool(_teacher_code())
+
+
+def check_teacher_code(code):
+    """Returns (True, "") if the teacher code is right, else (False, error_message)."""
+    secret = _teacher_code()
+    if not secret:
+        return False, "Teacher sign-up isn't switched on yet. Ask the admin."
+
+    # Stop people guessing the code: after 10 wrong tries in an hour, lock for a while.
+    execute("DELETE FROM teacher_code_fails WHERE created_at < now() - interval '1 day'")
+    recent = query(
+        "SELECT COUNT(*) AS n FROM teacher_code_fails "
+        "WHERE created_at > now() - interval '1 hour'"
+    )[0]["n"]
+    if recent >= 10:
+        return False, "Too many wrong teacher codes. Teacher sign-up is locked for a while."
+
+    if not hmac.compare_digest((code or "").strip().encode("utf-8"), secret.encode("utf-8")):
+        execute("INSERT INTO teacher_code_fails DEFAULT VALUES")
+        return False, "That teacher code is wrong."
+    return True, ""
+
+
+def get_class_teachers(class_id):
+    rows = query(
+        "SELECT name FROM users WHERE class_id = ? AND role = 'teacher' ORDER BY name",
+        (class_id,),
+    )
+    return [r["name"] for r in rows]

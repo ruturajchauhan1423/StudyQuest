@@ -6,7 +6,9 @@ import streamlit as st
 import database as db
 import mailer
 import planner
+import pomodoro
 import rewards
+import settings
 import theme
 import timeline
 
@@ -23,12 +25,15 @@ if "user" not in st.session_state:
 def show_login_and_signup():
     theme.hero()
 
+    if st.session_state.pop("goodbye", False):
+        st.success("Your account and its data have been deleted.")
+
     tab_login, tab_signup = st.tabs(["🔑 Log in", "✨ Sign up"])
 
     # ----- Log in -----
     with tab_login:
         with st.form("login_form"):
-            who = st.text_input("Student ID, email or phone")
+            who = st.text_input("ID, email or phone")
             pw = st.text_input("Password", type="password")
             login_clicked = st.form_submit_button("Log in")
 
@@ -52,10 +57,10 @@ def show_signup():
         if st.session_state.pop("celebrate", False):
             st.balloons()
         st.success(
-            f"Email verified and account created! Your Student ID is **{done}**. "
+            f"Email verified and account created! Your ID is **{done}**. "
             "Write it down, then open the Log in tab."
         )
-        if st.button("Sign up another student"):
+        if st.button("Sign up another account"):
             del st.session_state["signup_done"]
             st.rerun()
         return
@@ -65,14 +70,29 @@ def show_signup():
         show_verify_step(pending)
         return
 
+    kind = st.radio(
+        "I am a", ["🎒 Student", "🧑‍🏫 Teacher"], horizontal=True, key="signup_role"
+    )
+    is_teacher = kind.endswith("Teacher")
+    if is_teacher and not db.teacher_signup_enabled():
+        st.info("Teacher sign-up isn't switched on yet. The admin needs to set a teacher access code.")
+        return
+
     classes = db.get_classes()
     with st.form("signup_form"):
         name = st.text_input("Full name")
-        class_choice = st.selectbox("Your class", classes, format_func=lambda c: c["name"])
+        class_choice = st.selectbox(
+            "Class you teach" if is_teacher else "Your class",
+            classes,
+            format_func=lambda c: c["name"],
+        )
         email = st.text_input("Email (we will send a code to verify it)")
         phone = st.text_input("Phone number (10 digits)")
         pw1 = st.text_input("Choose a password (8+ characters)", type="password")
         pw2 = st.text_input("Repeat the password", type="password")
+        teacher_code = ""
+        if is_teacher:
+            teacher_code = st.text_input("Teacher access code", type="password")
         clicked = st.form_submit_button("Send verification code")
 
     if not clicked:
@@ -80,8 +100,16 @@ def show_signup():
     if pw1 != pw2:
         st.error("The two passwords don't match. Type them again.")
         return
+    if is_teacher:
+        ok, error = db.check_teacher_code(teacher_code)
+        if not ok:
+            st.error(error)
+            return
 
-    clean, error = db.check_signup(name, email, phone, pw1, class_choice["class_id"])
+    clean, error = db.check_signup(
+        name, email, phone, pw1, class_choice["class_id"],
+        role="teacher" if is_teacher else "student",
+    )
     if error:
         st.error(error)
         return
@@ -151,17 +179,21 @@ def show_home():
 
     col1, col2 = st.columns(2)
     col1.metric("Class", user["class_name"])
-    col2.metric("Student ID", user["student_code"])
+    col2.metric("Teacher ID" if user["role"] == "teacher" else "Student ID", user["student_code"])
 
-    tab_plan, tab_time, tab_rewards = st.tabs(
-        ["📅 My week", "🗓️ Class timeline", "🏆 Progress"]
+    tab_plan, tab_time, tab_focus, tab_rewards, tab_settings = st.tabs(
+        ["📅 Week", "🗓️ Timeline", "⏱️ Focus", "🏆 Progress", "⚙️ Settings"]
     )
     with tab_plan:
         planner.show(user)
     with tab_time:
         timeline.show(user)
+    with tab_focus:
+        pomodoro.show()
     with tab_rewards:
         rewards.show(user)
+    with tab_settings:
+        settings.show(user)
 
     if st.button("Log out"):
         st.session_state.user = None
