@@ -99,6 +99,38 @@ div.stButton > button:hover { border-color: #ffc94d; color: #ffc94d; }
     transform: translateY(-2px);
     box-shadow: 0 10px 24px rgba(255, 122, 69, 0.5);
 }
+
+/* ---- Readable in ANY theme mode: Streamlit's Light mode would make text dark ---- */
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp label,
+.stApp [data-testid="stMarkdownContainer"] *,
+.stApp [data-testid="stWidgetLabel"] *,
+.stApp [data-testid="stMetric"] *,
+.stApp [data-testid="stExpander"] summary *,
+.stApp [data-baseweb="tab"] * {
+    color: #f4f1ff !important;
+}
+.stApp [data-testid="stCaptionContainer"] * { color: #c9c4ee !important; }
+.stApp button[data-baseweb="tab"][aria-selected="true"] * { color: #ffc94d !important; }
+[data-baseweb="tab-highlight"] { background-color: #ff7a45 !important; }
+
+/* Dark input boxes with light typing */
+[data-baseweb="input"] > div, [data-baseweb="textarea"], [data-baseweb="select"] > div {
+    background-color: #221f5c !important;
+}
+.stApp input, .stApp textarea {
+    color: #f4f1ff !important;
+    -webkit-text-fill-color: #f4f1ff !important;
+}
+[data-baseweb="select"] *, [data-baseweb="input"] svg {
+    color: #f4f1ff !important;
+    fill: #f4f1ff !important;
+}
+
+/* Buttons: glass pills with light text, and sunrise pills with dark text */
+div.stButton > button, div.stButton > button * { color: #f4f1ff !important; }
+div.stButton > button:hover, div.stButton > button:hover * { color: #ffc94d !important; }
+.stApp [data-testid="stFormSubmitButton"] > button,
+.stApp [data-testid="stFormSubmitButton"] > button * { color: #1a1440 !important; }
 </style>
 """
 
@@ -109,7 +141,7 @@ LOGIN_HEADER = """
 .hero .logo { font-size: 3.4rem; line-height: 1.1; }
 .hero h1 { font-size: 3.1rem; font-weight: 700; margin: 0.2rem 0 0.4rem; padding: 0; color: #ffffff; }
 .hero p { margin: 0; font-size: 1.12rem; color: rgba(244, 241, 255, 0.85); }
-.hero p.small { margin-top: 0.3rem; font-size: 0.95rem; color: #ffc94d; }
+.hero p.small { margin-top: 0.3rem; font-size: 0.95rem; color: #ffc94d !important; }
 </style>
 <div class="hero">
   <div class="logo">🎓</div>
