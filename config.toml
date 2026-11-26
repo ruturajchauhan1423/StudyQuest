@@ -4,3 +4,15 @@ primaryColor = "#ff7a45"
 backgroundColor = "#14123a"
 secondaryBackgroundColor = "#221f5c"
 textColor = "#f4f1ff"
+
+[theme.light]
+primaryColor = "#ff7a45"
+backgroundColor = "#14123a"
+secondaryBackgroundColor = "#221f5c"
+textColor = "#f4f1ff"
+
+[theme.dark]
+primaryColor = "#ff7a45"
+backgroundColor = "#14123a"
+secondaryBackgroundColor = "#221f5c"
+textColor = "#f4f1ff"
